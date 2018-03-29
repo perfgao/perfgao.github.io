@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang=zh>
+<head>
+    <meta charset="utf-8">
+    
+    <title>nginx的时间管理 | perfgao</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <meta name="description" content="本文主要以work进程为主要研究对象，研究其在epoll模式下的时间管理逻辑。 时间缓存nginx 为尽量减少性能损耗，对时间的管理，采用了自己对时间进行缓存，以减少系统调用次数(时间更新使用gettimeofday函数)。这样做也是因为服务器基本对时间的精确度有个容忍度。 三类事件触发时间更新 网络IO事件 超时事件 定时事件">
+<meta name="keywords" content="nginx,timer,时间管理">
+<meta property="og:type" content="article">
+<meta property="og:title" content="nginx的时间管理">
+<meta property="og:url" content="http://www.perfgao.xin/2017/04/04/ngx_time_manege/index.html">
+<meta property="og:site_name" content="perfgao">
+<meta property="og:description" content="本文主要以work进程为主要研究对象，研究其在epoll模式下的时间管理逻辑。 时间缓存nginx 为尽量减少性能损耗，对时间的管理，采用了自己对时间进行缓存，以减少系统调用次数(时间更新使用gettimeofday函数)。这样做也是因为服务器基本对时间的精确度有个容忍度。 三类事件触发时间更新 网络IO事件 超时事件 定时事件">
+<meta property="og:locale" content="zh-CN">
+<meta property="og:image" content="http://www.perfgao.xin/static/image/67f4d95e0df4ac61560df133bc0f0da5.jpg">
+<meta property="og:updated_time" content="2018-03-28T13:34:42.240Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="nginx的时间管理">
+<meta name="twitter:description" content="本文主要以work进程为主要研究对象，研究其在epoll模式下的时间管理逻辑。 时间缓存nginx 为尽量减少性能损耗，对时间的管理，采用了自己对时间进行缓存，以减少系统调用次数(时间更新使用gettimeofday函数)。这样做也是因为服务器基本对时间的精确度有个容忍度。 三类事件触发时间更新 网络IO事件 超时事件 定时事件">
+<meta name="twitter:image" content="http://www.perfgao.xin/static/image/67f4d95e0df4ac61560df133bc0f0da5.jpg">
+    
+
+    
+        <link rel="alternate" href="/atom.xml" title="perfgao" type="application/atom+xml" />
+    
+
+    
+
+    <link rel="stylesheet" href="/libs/font-awesome/css/font-awesome.min.css">
+    <link rel="stylesheet" href="/libs/open-sans/styles.css">
+    <link rel="stylesheet" href="/libs/source-code-pro/styles.css">
+
+    <link rel="stylesheet" href="/css/style.css">
+
+    <script src="/libs/jquery/2.1.3/jquery.min.js"></script>
+    
+    
+        <link rel="stylesheet" href="/libs/lightgallery/css/lightgallery.min.css">
+    
+    
+        <link rel="stylesheet" href="/libs/justified-gallery/justifiedGallery.min.css">
+    
+    
+    
+    
+
+
+</head>
+
+<body>
+    <div id="container">
+        <header id="header">
+    <div id="header-main" class="header-inner">
+        <div class="outer">
+            <a href="/" id="logo">
+                <i class="logo"></i>
+                <span class="site-title">perfgao</span>
+            </a>
+            <nav id="main-nav">
+                
+                    <a class="main-nav-link" href="/.">Home</a>
+                
+                    <a class="main-nav-link" href="/archives">Archives</a>
+                
+                    <a class="main-nav-link" href="/categories">Categories</a>
+                
+                    <a class="main-nav-link" href="/tags">Tags</a>
+                
+                    <a class="main-nav-link" href="/about">About</a>
+                
+            </nav>
+            
+                
+                <nav id="sub-nav">
+                    <div class="profile" id="profile-nav">
+                        <a id="profile-anchor" href="javascript:;">
+                            <img class="avatar" src="/css/images/avatar.png" />
+                            <i class="fa fa-caret-down"></i>
+                        </a>
+                    </div>
+                </nav>
+            
+            <div id="search-form-wrap">
+
+    <form class="search-form">
+        <input type="text" class="ins-search-input search-form-input" placeholder="搜索" />
+        <button type="submit" class="search-form-submit"></button>
+    </form>
+    <div class="ins-search">
+    <div class="ins-search-mask"></div>
+    <div class="ins-search-container">
+        <div class="ins-input-wrapper">
+            <input type="text" class="ins-search-input" placeholder="想要查找什么..." />
+            <span class="ins-close ins-selectable"><i class="fa fa-times-circle"></i></span>
+        </div>
+        <div class="ins-section-wrapper">
+            <div class="ins-section-container"></div>
+        </div>
+    </div>
+</div>
+<script>
+(function (window) {
+    var INSIGHT_CONFIG = {
+        TRANSLATION: {
+            POSTS: '文章',
+            PAGES: '页面',
+            CATEGORIES: '分类',
+            TAGS: '标签',
+            UNTITLED: '(未命名)',
+        },
+        ROOT_URL: '/',
+        CONTENT_URL: '/content.json',
+    };
+    window.INSIGHT_CONFIG = INSIGHT_CONFIG;
+})(window);
+</script>
+<script src="/js/insight.js"></script>
+
+</div>
+        </div>
+    </div>
+    <div id="main-nav-mobile" class="header-sub header-inner">
+        <table class="menu outer">
+            <tr>
+                
+                    <td><a class="main-nav-link" href="/.">Home</a></td>
+                
+                    <td><a class="main-nav-link" href="/archives">Archives</a></td>
+                
+                    <td><a class="main-nav-link" href="/categories">Categories</a></td>
+                
+                    <td><a class="main-nav-link" href="/tags">Tags</a></td>
+                
+                    <td><a class="main-nav-link" href="/about">About</a></td>
+                
+                <td>
+                    
+    <div class="search-form">
+        <input type="text" class="ins-search-input search-form-input" placeholder="搜索" />
+    </div>
+
+                </td>
+            </tr>
+        </table>
+    </div>
+</header>
+
+        <div class="outer">
+            
+                
+
+<aside id="profile">
+    <div class="inner profile-inner">
+        <div class="base-info profile-block">
+            <img id="avatar" src="/css/images/avatar.png" />
+            <h2 id="name">Perfgao</h2>
+            <h3 id="title">Server &amp; Security Developer</h3>
+            <span id="location"><i class="fa fa-map-marker"></i>ShangHai, China</span>
+            <a id="follow" target="_blank" href="https://github.com/perfgao/">关注我</a>
+        </div>
+        <div class="article-info profile-block">
+            <div class="article-info-block">
+                5
+                <span>文章</span>
+            </div>
+            <div class="article-info-block">
+                6
+                <span>标签</span>
+            </div>
+        </div>
+        
+        <div class="profile-block social-links">
+            <table>
+                <tr>
+                    
+                    
+                    <td>
+                        <a href="http://github.com/perfgao" target="_blank" title="github" class=tooltip>
+                            <i class="fa fa-github"></i>
+                        </a>
+                    </td>
+                    
+                    <td>
+                        <a href="mailto:perfgao@gmail.com" target="_blank" title="envelope" class=tooltip>
+                            <i class="fa fa-envelope"></i>
+                        </a>
+                    </td>
+                    
+                    <td>
+                        <a href="/atom.xml" target="_blank" title="rss" class=tooltip>
+                            <i class="fa fa-rss"></i>
+                        </a>
+                    </td>
+                    
+                </tr>
+            </table>
+        </div>
+        
+    </div>
+</aside>
+
+            
+            <section id="main"><article id="post-ngx_time_manege" class="article article-type-post" itemscope itemprop="blogPost">
+    <div class="article-inner">
+        
+            
+	
+		<img src="/static/image/67f4d95e0df4ac61560df133bc0f0da5.jpg" class="article-banner" />
+	
+
+
+
+        
+        
+            <header class="article-header">
+                
+    
+        <h1 class="article-title" itemprop="name">
+            nginx的时间管理
+        </h1>
+    
+
+                
+                    <div class="article-meta">
+                        
+    <div class="article-date">
+        <i class="fa fa-calendar"></i>
+        <a href="/2017/04/04/ngx_time_manege/">
+            <time datetime="2017-04-04T14:09:10.000Z" itemprop="datePublished">2017-04-04</time>
+        </a>
+    </div>
+
+
+                        
+    <div class="article-category">
+    	<i class="fa fa-folder"></i>
+        <a class="article-category-link" href="/categories/nginx/">nginx</a>
+    </div>
+
+                        
+    <div class="article-tag">
+        <i class="fa fa-tag"></i>
+        <a class="tag-link" href="/tags/nginx/">nginx</a>, <a class="tag-link" href="/tags/timer/">timer</a>, <a class="tag-link" href="/tags/时间管理/">时间管理</a>
+    </div>
+
+                    </div>
+                
+            </header>
+        
+        
+        <div class="article-entry" itemprop="articleBody">
+        
+            
+            <p>本文主要以work进程为主要研究对象，研究其在epoll模式下的时间管理逻辑。</p>
+<h2 id="时间缓存"><a href="#时间缓存" class="headerlink" title="时间缓存"></a>时间缓存</h2><p>nginx 为尽量减少性能损耗，对时间的管理，采用了自己对时间进行缓存，以减少系统调用次数(时间更新使用gettimeofday函数)。这样做也是因为服务器基本对时间的精确度有个容忍度。</p>
+<h2 id="三类事件触发时间更新"><a href="#三类事件触发时间更新" class="headerlink" title="三类事件触发时间更新"></a>三类事件触发时间更新</h2><ul>
+<li>网络IO事件</li>
+<li>超时事件</li>
+<li>定时事件</li>
+</ul>
+<a id="more"></a>
+<h2 id="关于指令timer-resolution"><a href="#关于指令timer-resolution" class="headerlink" title="关于指令timer_resolution"></a>关于指令timer_resolution</h2><p>work进程对时间的更新在每次的epool_wait结束。在没有配置timer_resolution时，是通过网络IO事件和超时事件来触发更新。这种情况下时间的更新就与网络IO事件和超时事件息息相关。在某些情况下，比如没有超时事件注册，且没有网络IO事件发生，epoll_wait有会一直等待。想要准确的更新时间，nginx就提供了指令timer_resolution来设置获取时间的周期值。当配置了timer_resolution时，则是通过定时事件来触发时间更新的。</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">timer_resolution 100ms;</span><br></pre></td></tr></table></figure>
+<p>即是通过指定参数来设置更新频率。这种情况下，epoll_wait会阻塞等待一直到读写事件发生或则信号中断(注意此时没有超时时间)。<br><br>另外，看过一些资料说现在x86_64对gettimeofday函数的调用开销很小，所以在配置nginx时可以根据需要来决定是否配置该指令或设定适当更新时间的间隔。</p>
+<h2 id="从未配置timer-resolution谈起"><a href="#从未配置timer-resolution谈起" class="headerlink" title="从未配置timer_resolution谈起"></a>从未配置timer_resolution谈起</h2><p>nginx在master/workers下，每个进程都会维护自己的时间。这里主要看下work进程的时间管理逻辑。工作进程的主要工作函数在ngx_worker_process_cycle:<br><figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">static void</span><br><span class="line">ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)</span><br><span class="line">&#123;</span><br><span class="line">    for ( ;; ) &#123;</span><br><span class="line"></span><br><span class="line">        ngx_process_events_and_timers(cycle);</span><br><span class="line"></span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>每个子进程在进行一系列初始化工作之后，会进入到处理事件的循环中。<br>在循环中会调用 ngx_process_events_and_timers;<br>该函数是工作进程的核心函数，这里主要看时间相关的逻辑。<br><figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line">void</span><br><span class="line">ngx_process_events_and_timers(ngx_cycle_t *cycle)</span><br><span class="line">&#123;</span><br><span class="line">    if (ngx_timer_resolution) &#123;</span><br><span class="line">        timer = NGX_TIMER_INFINITE;  // 宏，值为 -1</span><br><span class="line">        flags = 0;</span><br><span class="line">    &#125; else &#123;</span><br><span class="line"></span><br><span class="line">        timer = ngx_event_find_timer(); //获取离现在最近的超时定时器时间</span><br><span class="line">        flags = NGX_UPDATE_TIME;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    (void) ngx_process_events(cycle, timer, flags);</span><br><span class="line"></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>她会对ngx_timer_resolution进行判断(注意：配置了timer_resolution，则ngx_timer_resolution为配置的时间值，<strong>未配置则ngx_timer_resolution值为0</strong>). <br><br>在没有配置情况下，通过ngx_event_find_timer获取最近的超时时间,flag赋值为NGX_UPDATE_TIME。之后传入ngx_process_events中：<br><figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">(void) ngx_process_events(cycle, timer, flags);</span><br></pre></td></tr></table></figure></p>
+<p>它是一个钩子函数。linux下，nginx use epoll下，事件为普通网络IO套接字，则调用为：<strong>ngx_epoll_process_events</strong>;<br><br>事件为异步文件i/o，则调用为： <strong>ngx_epoll_eventfd_handler</strong></p>
+<p>这里主要看下在ngx_epoll_process_events：<br><figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">static ngx_int_t</span><br><span class="line">ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)</span><br><span class="line">&#123;</span><br><span class="line">    events = epoll_wait(ep, event_list, (int) nevents, timer);</span><br><span class="line"></span><br><span class="line">    if (flags &amp; NGX_UPDATE_TIME || ngx_event_timer_alarm) &#123;</span><br><span class="line">        ngx_time_update();</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    for (i = 0; i &lt; events; i++) &#123;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>在ngx_epoll_process_events中会调用epoll_wait. 在没有设置 ngx_timer_resolution情况下，则传入的timer为获取的最近的超时时间，这样在epoll_wait即使没有读写事件发生，也会触发超时。不管是读写事件还是超时事件，都会因为传入的flag为NGX_UPDATE_TIME，而进行时间的更新。</p>
+<h2 id="配置timer-resolution下的时间管理"><a href="#配置timer-resolution下的时间管理" class="headerlink" title="配置timer_resolution下的时间管理"></a>配置timer_resolution下的时间管理</h2><p>这种情况下的时间更新逻辑，要从子进程创建开始：<br>nginx在创建子进程时，每个子进程初始化时会调用：<br><strong>ngx_event_process_init()</strong>;<br><figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br></pre></td><td class="code"><pre><span class="line">static ngx_int_t</span><br><span class="line">ngx_event_process_init(ngx_cycle_t *cycle)</span><br><span class="line">&#123;</span><br><span class="line"></span><br><span class="line">    if (ngx_timer_resolution &amp;&amp; !(ngx_event_flags &amp; NGX_USE_TIMER_EVENT)) &#123;</span><br><span class="line">        struct sigaction  sa;</span><br><span class="line">        struct itimerval  itv;</span><br><span class="line"></span><br><span class="line">        ngx_memzero(&amp;sa, sizeof(struct sigaction));</span><br><span class="line"></span><br><span class="line">        sa.sa_handler = ngx_timer_signal_handler;</span><br><span class="line">        sigemptyset(&amp;sa.sa_mask);</span><br><span class="line"></span><br><span class="line">        if (sigaction(SIGALRM, &amp;sa, NULL) == -1) &#123;</span><br><span class="line">            ngx_log_error(NGX_LOG_ALERT, cycle-&gt;log, ngx_errno,</span><br><span class="line">                          &quot;sigaction(SIGALRM) failed&quot;);</span><br><span class="line">            return NGX_ERROR;</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        itv.it_interval.tv_sec = ngx_timer_resolution / 1000;</span><br><span class="line">        itv.it_interval.tv_usec = (ngx_timer_resolution % 1000) * 1000;</span><br><span class="line">        itv.it_value.tv_sec = ngx_timer_resolution / 1000;</span><br><span class="line">        itv.it_value.tv_usec = (ngx_timer_resolution % 1000 ) * 1000;</span><br><span class="line"></span><br><span class="line">        if (setitimer(ITIMER_REAL, &amp;itv, NULL) == -1) &#123;</span><br><span class="line">            ngx_log_error(NGX_LOG_ALERT, cycle-&gt;log, ngx_errno,</span><br><span class="line">                          &quot;setitimer() failed&quot;);</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>   这里就会判断，若是指定了更新时间值，则该进程会设置一个定时器，并设置该进程的信号处理函数为<strong>ngx_timer_signal_handler</strong>:<br><figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">void  </span><br><span class="line">ngx_timer_signal_handler(int signo)  </span><br><span class="line">&#123;  </span><br><span class="line">    ngx_event_timer_alarm = 1;  </span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>结合以上ngx_worker_process_cycle和ngx_process_events_and_timers逻辑，进入ngx_process_events_and_timers时，会把timer设置为-1,flag为0。即传入ngx_epoll_process_events的timer为-1,flag为0。timer为-1使epoll_wait为永远等待，直到有读写事件发生。当有读写事件发生后，又由于flag为0，且此时若是ngx_event_timer_alarm为0,则不可能进入到时间更新。<br><br>而当定时时间到达时，信号处理函数就会设置ngx_event_timer_alarm为1，同时SIGALRM信号会使处于等待的epoll_wait中断，这样便会更新时间了。</p>
+<h2 id="最后在说下setitimer"><a href="#最后在说下setitimer" class="headerlink" title="最后在说下setitimer()"></a>最后在说下setitimer()</h2><p>setitimer(), 是linux的API函数。<br>它本身有两个作用：</p>
+<ul>
+<li>指定一段时间后才执行某个函数</li>
+<li>指定每隔一段时间就执行某个函数 <br></li>
+</ul>
+<p>当setitimer到时就会触发SIGALRM信号。而是要完成哪种作用效果，<br>   则是struct itimerva的设置了。</p>
+
+        
+        </div>
+        <footer class="article-footer">
+            <div class="share-container">
+
+    <div class="jiathis_style">
+    <span class="jiathis_txt">分享到：</span>
+    <a class="jiathis_button_qzone">QQ空间</a>
+    <a class="jiathis_button_tsina">新浪微博</a>
+    <a class="jiathis_button_tqq">腾讯微博</a>
+    <a class="jiathis_button_weixin">微信</a>
+    <a href="http://www.jiathis.com/share" class="jiathis jiathis_txt jiathis_separator jtico jtico_jiathis" target="_blank">更多</a>
+    <a class="jiathis_counter_style"></a>
+</div>
+<script type="text/javascript" src="http://v3.jiathis.com/code/jia.js" charset="utf-8"></script>
+<style>
+    .jiathis_style div:first-child:not(.jiadiv_01) {
+        width: auto !important;
+        border: none !important;
+    }
+    .jiathis_style .jiadiv_01 {
+        margin: 10px 0;
+        border-radius: 4px;
+        border: #e1e1e1 solid 1px;
+    }
+    .jiathis_style .jiadiv_01 div:first-child {
+        display: none;
+    }
+    .jiathis_style .jiadiv_02 {
+        padding: 7px 0 !important;
+    }
+    .jiathis_style .jiadiv_02 .jiatitle {
+        width: 85px;
+        border: none;
+        height: auto;
+        margin: 3px 10px;
+        padding: 6px 10px;
+        border-radius: 4px;
+    }
+    .jiathis_style .jiadiv_02 .jiatitle:hover {
+        border: none;
+    }
+    .jiathis_style .jiadiv_02 .jiatitle:nth-child(even) {
+        margin-left: 0;
+    }
+    .jiathis_style .jtico:hover {
+        opacity: 1;
+    }
+    .jiathis_style .ckepopBottom,
+    .jiathis_style .centerBottom {
+        width: auto !important;
+        padding: 5px;
+        background: #f7f7f7;
+    }
+</style>
+
+
+
+</div>
+
+            
+    
+
+        </footer>
+    </div>
+    
+        
+<nav id="article-nav">
+    
+        <a href="/2018/03/28/perfgao/" id="article-nav-newer" class="article-nav-link-wrap">
+            <strong class="article-nav-caption">上一篇</strong>
+            <div class="article-nav-title">
+                
+                    perfgao
+                
+            </div>
+        </a>
+    
+    
+        <a href="/2017/03/24/jingqun/" id="article-nav-older" class="article-nav-link-wrap">
+            <strong class="article-nav-caption">下一篇</strong>
+            <div class="article-nav-title">nginx 防止惊群</div>
+        </a>
+    
+</nav>
+
+
+    
+</article>
+
+
+    
+    
+        <section id="comments">
+	<div id="commentContainer"></div>
+</section>
+    
+
+</section>
+            
+                
+<aside id="sidebar">
+   
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">最新文章</h3>
+        <div class="widget">
+            <ul id="recent-post" class="">
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2018/03/28/perfgao/" class="thumbnail">
+    
+    
+        <span class="thumbnail-image thumbnail-none"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"></p>
+                            <p class="item-title"><a href="/2018/03/28/perfgao/" class="title">perfgao</a></p>
+                            <p class="item-date"><time datetime="2018-03-28T15:10:56.000Z" itemprop="datePublished">2018-03-28</time></p>
+                        </div>
+                    </li>
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2017/04/04/ngx_time_manege/" class="thumbnail">
+    
+    
+        <span style="background-image:url(/static/image/67f4d95e0df4ac61560df133bc0f0da5.jpg)" alt="nginx的时间管理" class="thumbnail-image"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"><a class="article-category-link" href="/categories/nginx/">nginx</a></p>
+                            <p class="item-title"><a href="/2017/04/04/ngx_time_manege/" class="title">nginx的时间管理</a></p>
+                            <p class="item-date"><time datetime="2017-04-04T14:09:10.000Z" itemprop="datePublished">2017-04-04</time></p>
+                        </div>
+                    </li>
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2017/03/24/jingqun/" class="thumbnail">
+    
+    
+        <span style="background-image:url(/static/image/435914a6f392e4fd125c40fe0c905200.jpg)" alt="nginx 防止惊群" class="thumbnail-image"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"><a class="article-category-link" href="/categories/nginx/">nginx</a></p>
+                            <p class="item-title"><a href="/2017/03/24/jingqun/" class="title">nginx 防止惊群</a></p>
+                            <p class="item-date"><time datetime="2017-03-24T10:43:21.000Z" itemprop="datePublished">2017-03-24</time></p>
+                        </div>
+                    </li>
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2017/03/17/nginx事件驱动框架/" class="thumbnail">
+    
+    
+        <span style="background-image:url(/static/image/3603b0058ac888a20293eca66687c64d.png)" alt="nginx事件驱动框架" class="thumbnail-image"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"><a class="article-category-link" href="/categories/nginx/">nginx</a></p>
+                            <p class="item-title"><a href="/2017/03/17/nginx事件驱动框架/" class="title">nginx事件驱动框架</a></p>
+                            <p class="item-date"><time datetime="2017-03-17T10:34:23.000Z" itemprop="datePublished">2017-03-17</time></p>
+                        </div>
+                    </li>
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2017/03/03/hello-world/" class="thumbnail">
+    
+    
+        <span style="background-image:url(/static/image/eb27f9c3886fc201011a821ffe098c8c.jpg)" alt="HEXO -- Hello World" class="thumbnail-image"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"></p>
+                            <p class="item-title"><a href="/2017/03/03/hello-world/" class="title">HEXO -- Hello World</a></p>
+                            <p class="item-date"><time datetime="2017-03-03T13:12:01.000Z" itemprop="datePublished">2017-03-03</time></p>
+                        </div>
+                    </li>
+                
+            </ul>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">分类</h3>
+        <div class="widget">
+            <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/nginx/">nginx</a><span class="category-list-count">3</span></li></ul>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">归档</h3>
+        <div class="widget">
+            <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">三月 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">四月 2017</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">三月 2017</a><span class="archive-list-count">3</span></li></ul>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">标签</h3>
+        <div class="widget">
+            <ul class="tag-list"><li class="tag-list-item"><a class="tag-list-link" href="/tags/epoll/">epoll</a><span class="tag-list-count">1</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/nginx/">nginx</a><span class="tag-list-count">3</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/timer/">timer</a><span class="tag-list-count">1</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/事件驱动/">事件驱动</a><span class="tag-list-count">1</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/惊群/">惊群</a><span class="tag-list-count">1</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/时间管理/">时间管理</a><span class="tag-list-count">1</span></li></ul>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">标签云</h3>
+        <div class="widget tagcloud">
+            <a href="/tags/epoll/" style="font-size: 10px;">epoll</a> <a href="/tags/nginx/" style="font-size: 20px;">nginx</a> <a href="/tags/timer/" style="font-size: 10px;">timer</a> <a href="/tags/事件驱动/" style="font-size: 10px;">事件驱动</a> <a href="/tags/惊群/" style="font-size: 10px;">惊群</a> <a href="/tags/时间管理/" style="font-size: 10px;">时间管理</a>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap widget-list">
+        <h3 class="widget-title">链接</h3>
+        <div class="widget">
+            <ul>
+                
+                    <li>
+                        <a href="https://nginx.org/">nginx</a>
+                    </li>
+                
+                    <li>
+                        <a href="https://openresty.org/">openresty</a>
+                    </li>
+                
+                    <li>
+                        <a href="http://hexo.io/">Hexo</a>
+                    </li>
+                
+            </ul>
+        </div>
+    </div>
+
+
+    
+    <div id="toTop" class="fa fa-angle-up"></div>
+</aside>
+
+            
+        </div>
+        <footer id="footer">
+    <div class="outer">
+        <div id="footer-info" class="inner">
+            &copy; 2018 perfgao<br>
+            本站总访问量 <span id="busuanzi_value_site_pv"></span> 次, 访客数 <span id="busuanzi_value_site_uv"></span> 人次, 本文总阅读量 <span id="busuanzi_value_page_pv"></span> 次<br>
+            Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>. Theme by <a href="http://github.com/ppoffice">PPOffice</a>
+        </div>
+    </div>
+</footer>
+
+<script async src="//dn-lbstatics.qbox.me/busuanzi/2.3/busuanzi.pure.mini.js"></script>
+
+        
+    
+	<link rel="stylesheet" href="https://imsun.github.io/gitment/style/default.css">
+	<script src="https://imsun.github.io/gitment/dist/gitment.browser.js"></script>
+	<script>
+		var gitment = new Gitment({
+			owner: 'perfgao',
+			repo: 'perfgao.github.io',
+			oauth: {
+				client_id: '0e792f63f3ed8fb45a1a',
+				client_secret: '7758220cadb4ec76ecfaa500f7891c1fcdee9c7c',
+			},
+		})
+		gitment.render('commentContainer')
+	</script>
+	
+
+
+
+    
+        <script src="/libs/lightgallery/js/lightgallery.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-thumbnail.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-pager.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-autoplay.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-fullscreen.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-zoom.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-hash.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-share.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-video.min.js"></script>
+    
+    
+        <script src="/libs/justified-gallery/jquery.justifiedGallery.min.js"></script>
+    
+    
+
+
+
+<!-- Custom Scripts -->
+<script src="/js/main.js"></script>
+
+    </div>
+</body>
+</html>

@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang=zh>
+<head>
+    <meta charset="utf-8">
+    
+    <title>nginx 防止惊群 | perfgao</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <meta name="description" content="惊群 惊群现象就是多个进程同时等待同一个事件，当有事件发生时，所有进程都被唤醒，同时去响应这个事件，最后只有一个进程能成功执行，而其他进程只能继续重新休眠。nginx 在master/workers模型下，多个worker进程进行epoll_wait，当有新的连接事件发生，会唤醒所有进程的epoll_wait，结果有些进程发现accpte是失败的。这样的话，开销变大，性能也会随之下降。">
+<meta name="keywords" content="nginx,惊群">
+<meta property="og:type" content="article">
+<meta property="og:title" content="nginx 防止惊群">
+<meta property="og:url" content="http://www.perfgao.xin/2017/03/24/jingqun/index.html">
+<meta property="og:site_name" content="perfgao">
+<meta property="og:description" content="惊群 惊群现象就是多个进程同时等待同一个事件，当有事件发生时，所有进程都被唤醒，同时去响应这个事件，最后只有一个进程能成功执行，而其他进程只能继续重新休眠。nginx 在master/workers模型下，多个worker进程进行epoll_wait，当有新的连接事件发生，会唤醒所有进程的epoll_wait，结果有些进程发现accpte是失败的。这样的话，开销变大，性能也会随之下降。">
+<meta property="og:locale" content="zh-CN">
+<meta property="og:image" content="http://www.perfgao.xin/static/image/435914a6f392e4fd125c40fe0c905200.jpg">
+<meta property="og:updated_time" content="2018-03-28T13:34:42.239Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="nginx 防止惊群">
+<meta name="twitter:description" content="惊群 惊群现象就是多个进程同时等待同一个事件，当有事件发生时，所有进程都被唤醒，同时去响应这个事件，最后只有一个进程能成功执行，而其他进程只能继续重新休眠。nginx 在master/workers模型下，多个worker进程进行epoll_wait，当有新的连接事件发生，会唤醒所有进程的epoll_wait，结果有些进程发现accpte是失败的。这样的话，开销变大，性能也会随之下降。">
+<meta name="twitter:image" content="http://www.perfgao.xin/static/image/435914a6f392e4fd125c40fe0c905200.jpg">
+    
+
+    
+        <link rel="alternate" href="/atom.xml" title="perfgao" type="application/atom+xml" />
+    
+
+    
+
+    <link rel="stylesheet" href="/libs/font-awesome/css/font-awesome.min.css">
+    <link rel="stylesheet" href="/libs/open-sans/styles.css">
+    <link rel="stylesheet" href="/libs/source-code-pro/styles.css">
+
+    <link rel="stylesheet" href="/css/style.css">
+
+    <script src="/libs/jquery/2.1.3/jquery.min.js"></script>
+    
+    
+        <link rel="stylesheet" href="/libs/lightgallery/css/lightgallery.min.css">
+    
+    
+        <link rel="stylesheet" href="/libs/justified-gallery/justifiedGallery.min.css">
+    
+    
+    
+    
+
+
+</head>
+
+<body>
+    <div id="container">
+        <header id="header">
+    <div id="header-main" class="header-inner">
+        <div class="outer">
+            <a href="/" id="logo">
+                <i class="logo"></i>
+                <span class="site-title">perfgao</span>
+            </a>
+            <nav id="main-nav">
+                
+                    <a class="main-nav-link" href="/.">Home</a>
+                
+                    <a class="main-nav-link" href="/archives">Archives</a>
+                
+                    <a class="main-nav-link" href="/categories">Categories</a>
+                
+                    <a class="main-nav-link" href="/tags">Tags</a>
+                
+                    <a class="main-nav-link" href="/about">About</a>
+                
+            </nav>
+            
+                
+                <nav id="sub-nav">
+                    <div class="profile" id="profile-nav">
+                        <a id="profile-anchor" href="javascript:;">
+                            <img class="avatar" src="/css/images/avatar.png" />
+                            <i class="fa fa-caret-down"></i>
+                        </a>
+                    </div>
+                </nav>
+            
+            <div id="search-form-wrap">
+
+    <form class="search-form">
+        <input type="text" class="ins-search-input search-form-input" placeholder="搜索" />
+        <button type="submit" class="search-form-submit"></button>
+    </form>
+    <div class="ins-search">
+    <div class="ins-search-mask"></div>
+    <div class="ins-search-container">
+        <div class="ins-input-wrapper">
+            <input type="text" class="ins-search-input" placeholder="想要查找什么..." />
+            <span class="ins-close ins-selectable"><i class="fa fa-times-circle"></i></span>
+        </div>
+        <div class="ins-section-wrapper">
+            <div class="ins-section-container"></div>
+        </div>
+    </div>
+</div>
+<script>
+(function (window) {
+    var INSIGHT_CONFIG = {
+        TRANSLATION: {
+            POSTS: '文章',
+            PAGES: '页面',
+            CATEGORIES: '分类',
+            TAGS: '标签',
+            UNTITLED: '(未命名)',
+        },
+        ROOT_URL: '/',
+        CONTENT_URL: '/content.json',
+    };
+    window.INSIGHT_CONFIG = INSIGHT_CONFIG;
+})(window);
+</script>
+<script src="/js/insight.js"></script>
+
+</div>
+        </div>
+    </div>
+    <div id="main-nav-mobile" class="header-sub header-inner">
+        <table class="menu outer">
+            <tr>
+                
+                    <td><a class="main-nav-link" href="/.">Home</a></td>
+                
+                    <td><a class="main-nav-link" href="/archives">Archives</a></td>
+                
+                    <td><a class="main-nav-link" href="/categories">Categories</a></td>
+                
+                    <td><a class="main-nav-link" href="/tags">Tags</a></td>
+                
+                    <td><a class="main-nav-link" href="/about">About</a></td>
+                
+                <td>
+                    
+    <div class="search-form">
+        <input type="text" class="ins-search-input search-form-input" placeholder="搜索" />
+    </div>
+
+                </td>
+            </tr>
+        </table>
+    </div>
+</header>
+
+        <div class="outer">
+            
+                
+
+<aside id="profile">
+    <div class="inner profile-inner">
+        <div class="base-info profile-block">
+            <img id="avatar" src="/css/images/avatar.png" />
+            <h2 id="name">Perfgao</h2>
+            <h3 id="title">Server &amp; Security Developer</h3>
+            <span id="location"><i class="fa fa-map-marker"></i>ShangHai, China</span>
+            <a id="follow" target="_blank" href="https://github.com/perfgao/">关注我</a>
+        </div>
+        <div class="article-info profile-block">
+            <div class="article-info-block">
+                5
+                <span>文章</span>
+            </div>
+            <div class="article-info-block">
+                6
+                <span>标签</span>
+            </div>
+        </div>
+        
+        <div class="profile-block social-links">
+            <table>
+                <tr>
+                    
+                    
+                    <td>
+                        <a href="http://github.com/perfgao" target="_blank" title="github" class=tooltip>
+                            <i class="fa fa-github"></i>
+                        </a>
+                    </td>
+                    
+                    <td>
+                        <a href="mailto:perfgao@gmail.com" target="_blank" title="envelope" class=tooltip>
+                            <i class="fa fa-envelope"></i>
+                        </a>
+                    </td>
+                    
+                    <td>
+                        <a href="/atom.xml" target="_blank" title="rss" class=tooltip>
+                            <i class="fa fa-rss"></i>
+                        </a>
+                    </td>
+                    
+                </tr>
+            </table>
+        </div>
+        
+    </div>
+</aside>
+
+            
+            <section id="main"><article id="post-jingqun" class="article article-type-post" itemscope itemprop="blogPost">
+    <div class="article-inner">
+        
+            
+	
+		<img src="/static/image/435914a6f392e4fd125c40fe0c905200.jpg" class="article-banner" />
+	
+
+
+
+        
+        
+            <header class="article-header">
+                
+    
+        <h1 class="article-title" itemprop="name">
+            nginx 防止惊群
+        </h1>
+    
+
+                
+                    <div class="article-meta">
+                        
+    <div class="article-date">
+        <i class="fa fa-calendar"></i>
+        <a href="/2017/03/24/jingqun/">
+            <time datetime="2017-03-24T10:43:21.000Z" itemprop="datePublished">2017-03-24</time>
+        </a>
+    </div>
+
+
+                        
+    <div class="article-category">
+    	<i class="fa fa-folder"></i>
+        <a class="article-category-link" href="/categories/nginx/">nginx</a>
+    </div>
+
+                        
+    <div class="article-tag">
+        <i class="fa fa-tag"></i>
+        <a class="tag-link" href="/tags/nginx/">nginx</a>, <a class="tag-link" href="/tags/惊群/">惊群</a>
+    </div>
+
+                    </div>
+                
+            </header>
+        
+        
+        <div class="article-entry" itemprop="articleBody">
+        
+            
+            <h2 id="惊群"><a href="#惊群" class="headerlink" title="惊群"></a>惊群</h2><p> 惊群现象就是多个进程同时等待同一个事件，当有事件发生时，所有进程都被唤醒，同时去响应这个事件，最后只有一个进程能成功执行，而其他进程只能继续重新休眠。nginx 在master/workers模型下，多个worker进程进行epoll_wait，当有新的连接事件发生，会唤醒所有进程的epoll_wait，结果有些进程发现accpte是失败的。这样的话，开销变大，性能也会随之下降。</p>
+<a id="more"></a>
+<h2 id="nginx的解决方案"><a href="#nginx的解决方案" class="headerlink" title="nginx的解决方案"></a>nginx的解决方案</h2><p>解决这个问题的方案总结下来就是一句话：<br><strong>同一时刻只允许有一个worker进程将需要监听的句柄加入到自己的epoll中</strong>。</p>
+<h2 id="accpet锁机制"><a href="#accpet锁机制" class="headerlink" title="accpet锁机制"></a>accpet锁机制</h2><p>通过使用加锁的机制，来做进程间的协调。如果开启了accept锁，则每个worker进程每次在进入epoll_wait获取事件之前，会进行尝试获取锁。只有获取到锁的worker进程才能将需要监听的句柄加入到自己的epoll中，进而去处理accpet事件。<br>不过，这里要注意几个逻辑：</p>
+<ul>
+<li>如果该worker进程获取锁成功：<ul>
+<li>并且其<strong>上一次</strong>尝试获得锁是失败的（即上一次没有获得到锁），才会将现有的cycle-&gt;listening数组中需要监听的句柄加入到自己的epoll中，</li>
+<li>要是<strong>上一次</strong>尝试获得锁也是成功的（即上一次该进程得到了锁，这次仍是该进程拥有），则会直接返回。</li>
+</ul>
+</li>
+<li>如果该worker进程获取锁失败，<ul>
+<li>并且其<strong>上一次</strong>尝试获得锁也是失败的，则会直接返回。</li>
+<li>如果其<strong>上一次</strong>尝试获得锁是成功的，则会将现有的cycle-&gt;listening数组中已经监听的句柄从自己的epoll中移除。</li>
+</ul>
+</li>
+</ul>
+<h2 id="POST事件"><a href="#POST事件" class="headerlink" title="POST事件"></a>POST事件</h2><p>对于得到锁的进程，会携带<strong>NGX_POST_EVENTS</strong>标记属性。这样在epoll_wait后，会把需要处理的事件先加入到队列中，延迟处理，目的就是避免该进程长时间占有锁。<br>特别说明一下，这里的延迟队列分为两种：</p>
+<ul>
+<li>accept事件的延迟队列</li>
+<li>read/write事件的延迟队列</li>
+</ul>
+<p>也就是对应的事件会加到对应的延迟队列中。进程在释放锁之前，会先处理accept事件的延迟队列，处理完后才会释放锁，然后再去处理超时事件和read/write事件的延迟队列，这样既保证的处理accpet的可靠性，也避免了长时间对锁的占用。</p>
+<h2 id="未得到锁的进程"><a href="#未得到锁的进程" class="headerlink" title="未得到锁的进程"></a>未得到锁的进程</h2><p>与此同时，未得到锁的进程会在epoll_wait下至少等待ngx_accept_mutex_delay毫秒，因为有可能超时事件的发生时间会短与ngx_accept_mutex_delay，也有可能有普通的读写事件触发。总之，该进程会更新进程时间缓存，处理相关的事件。然后再次尝试锁的获取。</p>
+<h2 id="指令-accept-mutex"><a href="#指令-accept-mutex" class="headerlink" title="指令 accept_mutex"></a>指令 accept_mutex</h2><ul>
+<li>默认是打开。</li>
+</ul>
+<p>与它相关的指令：</p>
+<ul>
+<li>accept_mutex_delay – 默认 500 毫秒</li>
+</ul>
+<h2 id="看下代码逻辑实现"><a href="#看下代码逻辑实现" class="headerlink" title="看下代码逻辑实现"></a>看下代码逻辑实现</h2><ul>
+<li>ngx_use_accept_mutex: 当开启了accept_mutex，且worker进程数 &gt; 1, ngx_use_accept_mutex会置为1</li>
+<li>ngx_process_events 是一个函数指针。普通网络套接字调用ngx_epoll_process_events函数开始处理，异步文件i/o设置事件的回调方法为ngx_epoll_eventfd_handler。这里主要看下ngx_epoll_process_events函数逻辑。</li>
+<li>注意：这里仅仅是为了方便阅读，只是展现了大概的代码逻辑，省略了部分代码。</li>
+</ul>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br></pre></td><td class="code"><pre><span class="line">void</span><br><span class="line">ngx_process_events_and_timers(ngx_cycle_t *cycle)</span><br><span class="line">&#123;</span><br><span class="line"></span><br><span class="line">    if (ngx_use_accept_mutex) &#123;</span><br><span class="line"></span><br><span class="line">        if (ngx_trylock_accept_mutex(cycle) == NGX_ERROR) &#123;</span><br><span class="line">            return;</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        if (ngx_accept_mutex_held) &#123;</span><br><span class="line">            flags |= NGX_POST_EVENTS;</span><br><span class="line">        &#125; else &#123;</span><br><span class="line">            if (timer == NGX_TIMER_INFINITE</span><br><span class="line">                    || timer &gt; ngx_accept_mutex_delay)</span><br><span class="line">            &#123;</span><br><span class="line">                timer = ngx_accept_mutex_delay;</span><br><span class="line">            &#125;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    (void) ngx_process_events(cycle, timer, flags);</span><br><span class="line"></span><br><span class="line">    ngx_event_process_posted(cycle, &amp;ngx_posted_accept_events);</span><br><span class="line"></span><br><span class="line">    if (ngx_accept_mutex_held) &#123;</span><br><span class="line">        ngx_shmtx_unlock(&amp;ngx_accept_mutex);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    if (delta) &#123;</span><br><span class="line">        ngx_event_expire_timers();</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    ngx_event_process_posted(cycle, &amp;ngx_posted_events);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br></pre></td><td class="code"><pre><span class="line">ngx_int_t</span><br><span class="line">ngx_trylock_accept_mutex(ngx_cycle_t *cycle)</span><br><span class="line">&#123;</span><br><span class="line">    if (ngx_shmtx_trylock(&amp;ngx_accept_mutex)) &#123;</span><br><span class="line"></span><br><span class="line">        if (ngx_accept_mutex_held &amp;&amp; ngx_accept_events == 0) &#123;</span><br><span class="line">            return NGX_OK;</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        if (ngx_enable_accept_events(cycle) == NGX_ERROR) &#123;</span><br><span class="line">            ngx_shmtx_unlock(&amp;ngx_accept_mutex);</span><br><span class="line">            return NGX_ERROR;</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        ngx_accept_events = 0;</span><br><span class="line">        ngx_accept_mutex_held = 1;  </span><br><span class="line"></span><br><span class="line">        return NGX_OK;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    if (ngx_accept_mutex_held) &#123;</span><br><span class="line">        if (ngx_disable_accept_events(cycle, 0) == NGX_ERROR) &#123;</span><br><span class="line">            return NGX_ERROR;</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        ngx_accept_mutex_held = 0;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    return NGX_OK;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br></pre></td><td class="code"><pre><span class="line">static ngx_int_t</span><br><span class="line">ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)</span><br><span class="line">&#123;</span><br><span class="line">    events = epoll_wait(ep, event_list, (int) nevents, timer);  </span><br><span class="line"></span><br><span class="line">    ngx_time_update();</span><br><span class="line"></span><br><span class="line">    for (i = 0; i &lt; events; i++) &#123;</span><br><span class="line"></span><br><span class="line">        if ((revents &amp; EPOLLIN) &amp;&amp; rev-&gt;active) &#123;</span><br><span class="line"></span><br><span class="line">            if (flags &amp; NGX_POST_EVENTS) &#123;</span><br><span class="line">                queue = rev-&gt;accept ? &amp;ngx_posted_accept_events</span><br><span class="line">                                    : &amp;ngx_posted_events;</span><br><span class="line"></span><br><span class="line">                ngx_post_event(rev, queue);</span><br><span class="line"></span><br><span class="line">            &#125; else &#123;</span><br><span class="line">                rev-&gt;handler(rev);</span><br><span class="line">            &#125;</span><br><span class="line"></span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        if ((revents &amp; EPOLLOUT) &amp;&amp; wev-&gt;active) &#123;</span><br><span class="line"></span><br><span class="line">            if (flags &amp; NGX_POST_EVENTS) &#123;</span><br><span class="line">                ngx_post_event(wev, &amp;ngx_posted_events);</span><br><span class="line">            &#125; else &#123;</span><br><span class="line">                wev-&gt;handler(wev);</span><br><span class="line">            &#125;</span><br><span class="line"></span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+        
+        </div>
+        <footer class="article-footer">
+            <div class="share-container">
+
+    <div class="jiathis_style">
+    <span class="jiathis_txt">分享到：</span>
+    <a class="jiathis_button_qzone">QQ空间</a>
+    <a class="jiathis_button_tsina">新浪微博</a>
+    <a class="jiathis_button_tqq">腾讯微博</a>
+    <a class="jiathis_button_weixin">微信</a>
+    <a href="http://www.jiathis.com/share" class="jiathis jiathis_txt jiathis_separator jtico jtico_jiathis" target="_blank">更多</a>
+    <a class="jiathis_counter_style"></a>
+</div>
+<script type="text/javascript" src="http://v3.jiathis.com/code/jia.js" charset="utf-8"></script>
+<style>
+    .jiathis_style div:first-child:not(.jiadiv_01) {
+        width: auto !important;
+        border: none !important;
+    }
+    .jiathis_style .jiadiv_01 {
+        margin: 10px 0;
+        border-radius: 4px;
+        border: #e1e1e1 solid 1px;
+    }
+    .jiathis_style .jiadiv_01 div:first-child {
+        display: none;
+    }
+    .jiathis_style .jiadiv_02 {
+        padding: 7px 0 !important;
+    }
+    .jiathis_style .jiadiv_02 .jiatitle {
+        width: 85px;
+        border: none;
+        height: auto;
+        margin: 3px 10px;
+        padding: 6px 10px;
+        border-radius: 4px;
+    }
+    .jiathis_style .jiadiv_02 .jiatitle:hover {
+        border: none;
+    }
+    .jiathis_style .jiadiv_02 .jiatitle:nth-child(even) {
+        margin-left: 0;
+    }
+    .jiathis_style .jtico:hover {
+        opacity: 1;
+    }
+    .jiathis_style .ckepopBottom,
+    .jiathis_style .centerBottom {
+        width: auto !important;
+        padding: 5px;
+        background: #f7f7f7;
+    }
+</style>
+
+
+
+</div>
+
+            
+    
+
+        </footer>
+    </div>
+    
+        
+<nav id="article-nav">
+    
+        <a href="/2017/04/04/ngx_time_manege/" id="article-nav-newer" class="article-nav-link-wrap">
+            <strong class="article-nav-caption">上一篇</strong>
+            <div class="article-nav-title">
+                
+                    nginx的时间管理
+                
+            </div>
+        </a>
+    
+    
+        <a href="/2017/03/17/nginx事件驱动框架/" id="article-nav-older" class="article-nav-link-wrap">
+            <strong class="article-nav-caption">下一篇</strong>
+            <div class="article-nav-title">nginx事件驱动框架</div>
+        </a>
+    
+</nav>
+
+
+    
+</article>
+
+
+    
+    
+        <section id="comments">
+	<div id="commentContainer"></div>
+</section>
+    
+
+</section>
+            
+                
+<aside id="sidebar">
+   
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">最新文章</h3>
+        <div class="widget">
+            <ul id="recent-post" class="">
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2018/03/28/perfgao/" class="thumbnail">
+    
+    
+        <span class="thumbnail-image thumbnail-none"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"></p>
+                            <p class="item-title"><a href="/2018/03/28/perfgao/" class="title">perfgao</a></p>
+                            <p class="item-date"><time datetime="2018-03-28T15:10:56.000Z" itemprop="datePublished">2018-03-28</time></p>
+                        </div>
+                    </li>
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2017/04/04/ngx_time_manege/" class="thumbnail">
+    
+    
+        <span style="background-image:url(/static/image/67f4d95e0df4ac61560df133bc0f0da5.jpg)" alt="nginx的时间管理" class="thumbnail-image"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"><a class="article-category-link" href="/categories/nginx/">nginx</a></p>
+                            <p class="item-title"><a href="/2017/04/04/ngx_time_manege/" class="title">nginx的时间管理</a></p>
+                            <p class="item-date"><time datetime="2017-04-04T14:09:10.000Z" itemprop="datePublished">2017-04-04</time></p>
+                        </div>
+                    </li>
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2017/03/24/jingqun/" class="thumbnail">
+    
+    
+        <span style="background-image:url(/static/image/435914a6f392e4fd125c40fe0c905200.jpg)" alt="nginx 防止惊群" class="thumbnail-image"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"><a class="article-category-link" href="/categories/nginx/">nginx</a></p>
+                            <p class="item-title"><a href="/2017/03/24/jingqun/" class="title">nginx 防止惊群</a></p>
+                            <p class="item-date"><time datetime="2017-03-24T10:43:21.000Z" itemprop="datePublished">2017-03-24</time></p>
+                        </div>
+                    </li>
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2017/03/17/nginx事件驱动框架/" class="thumbnail">
+    
+    
+        <span style="background-image:url(/static/image/3603b0058ac888a20293eca66687c64d.png)" alt="nginx事件驱动框架" class="thumbnail-image"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"><a class="article-category-link" href="/categories/nginx/">nginx</a></p>
+                            <p class="item-title"><a href="/2017/03/17/nginx事件驱动框架/" class="title">nginx事件驱动框架</a></p>
+                            <p class="item-date"><time datetime="2017-03-17T10:34:23.000Z" itemprop="datePublished">2017-03-17</time></p>
+                        </div>
+                    </li>
+                
+                    <li>
+                        
+                        <div class="item-thumbnail">
+                            <a href="/2017/03/03/hello-world/" class="thumbnail">
+    
+    
+        <span style="background-image:url(/static/image/eb27f9c3886fc201011a821ffe098c8c.jpg)" alt="HEXO -- Hello World" class="thumbnail-image"></span>
+    
+</a>
+
+                        </div>
+                        
+                        <div class="item-inner">
+                            <p class="item-category"></p>
+                            <p class="item-title"><a href="/2017/03/03/hello-world/" class="title">HEXO -- Hello World</a></p>
+                            <p class="item-date"><time datetime="2017-03-03T13:12:01.000Z" itemprop="datePublished">2017-03-03</time></p>
+                        </div>
+                    </li>
+                
+            </ul>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">分类</h3>
+        <div class="widget">
+            <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/nginx/">nginx</a><span class="category-list-count">3</span></li></ul>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">归档</h3>
+        <div class="widget">
+            <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">三月 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">四月 2017</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">三月 2017</a><span class="archive-list-count">3</span></li></ul>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">标签</h3>
+        <div class="widget">
+            <ul class="tag-list"><li class="tag-list-item"><a class="tag-list-link" href="/tags/epoll/">epoll</a><span class="tag-list-count">1</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/nginx/">nginx</a><span class="tag-list-count">3</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/timer/">timer</a><span class="tag-list-count">1</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/事件驱动/">事件驱动</a><span class="tag-list-count">1</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/惊群/">惊群</a><span class="tag-list-count">1</span></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/时间管理/">时间管理</a><span class="tag-list-count">1</span></li></ul>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap">
+        <h3 class="widget-title">标签云</h3>
+        <div class="widget tagcloud">
+            <a href="/tags/epoll/" style="font-size: 10px;">epoll</a> <a href="/tags/nginx/" style="font-size: 20px;">nginx</a> <a href="/tags/timer/" style="font-size: 10px;">timer</a> <a href="/tags/事件驱动/" style="font-size: 10px;">事件驱动</a> <a href="/tags/惊群/" style="font-size: 10px;">惊群</a> <a href="/tags/时间管理/" style="font-size: 10px;">时间管理</a>
+        </div>
+    </div>
+
+    
+        
+    <div class="widget-wrap widget-list">
+        <h3 class="widget-title">链接</h3>
+        <div class="widget">
+            <ul>
+                
+                    <li>
+                        <a href="https://nginx.org/">nginx</a>
+                    </li>
+                
+                    <li>
+                        <a href="https://openresty.org/">openresty</a>
+                    </li>
+                
+                    <li>
+                        <a href="http://hexo.io/">Hexo</a>
+                    </li>
+                
+            </ul>
+        </div>
+    </div>
+
+
+    
+    <div id="toTop" class="fa fa-angle-up"></div>
+</aside>
+
+            
+        </div>
+        <footer id="footer">
+    <div class="outer">
+        <div id="footer-info" class="inner">
+            &copy; 2018 perfgao<br>
+            本站总访问量 <span id="busuanzi_value_site_pv"></span> 次, 访客数 <span id="busuanzi_value_site_uv"></span> 人次, 本文总阅读量 <span id="busuanzi_value_page_pv"></span> 次<br>
+            Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>. Theme by <a href="http://github.com/ppoffice">PPOffice</a>
+        </div>
+    </div>
+</footer>
+
+<script async src="//dn-lbstatics.qbox.me/busuanzi/2.3/busuanzi.pure.mini.js"></script>
+
+        
+    
+	<link rel="stylesheet" href="https://imsun.github.io/gitment/style/default.css">
+	<script src="https://imsun.github.io/gitment/dist/gitment.browser.js"></script>
+	<script>
+		var gitment = new Gitment({
+			owner: 'perfgao',
+			repo: 'perfgao.github.io',
+			oauth: {
+				client_id: '0e792f63f3ed8fb45a1a',
+				client_secret: '7758220cadb4ec76ecfaa500f7891c1fcdee9c7c',
+			},
+		})
+		gitment.render('commentContainer')
+	</script>
+	
+
+
+
+    
+        <script src="/libs/lightgallery/js/lightgallery.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-thumbnail.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-pager.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-autoplay.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-fullscreen.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-zoom.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-hash.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-share.min.js"></script>
+        <script src="/libs/lightgallery/js/lg-video.min.js"></script>
+    
+    
+        <script src="/libs/justified-gallery/jquery.justifiedGallery.min.js"></script>
+    
+    
+
+
+
+<!-- Custom Scripts -->
+<script src="/js/main.js"></script>
+
+    </div>
+</body>
+</html>
